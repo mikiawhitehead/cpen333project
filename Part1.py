@@ -127,9 +127,12 @@ class Game():
         SPEED = 0.15          # speed of snake updates (sec)
         # While the game is not over we continuously want the snake to move
         while self.gameNotOver:
+            # We fixed the race condition caused by the sleep method by adding the following code
+            # fast_input_semaphore.aquire()
             time.sleep(SPEED)   # This will set how fast we call the move method
+            # fast_input_semaphore.release()
             self.move()         # Call the move method
-
+            
     def whenAnArrowKeyIsPressed(self, e) -> None:
         """ 
             This method is bound to the arrow keys
@@ -137,15 +140,19 @@ class Game():
             It sets the movement direction based on 
             the key that was pressed by the gamer.
             Use as is.
-        """
+        """ 
         currentDirection = self.direction
         #ignore invalid keys
+        # We can make this a bit more efficient by: (currentDirection == "Left" or currentDirection == "Right") and (e.keysym == "Right" or e.keysym == "Left") or (currentDirection == "Down" or currentDirection == "Up") and (e.keysym == "Down" or e.keysym == "Up")
         if (currentDirection == "Left" and e.keysym == "Right" or 
             currentDirection == "Right" and e.keysym == "Left" or
             currentDirection == "Up" and e.keysym == "Down" or
             currentDirection == "Down" and e.keysym == "Up"):
-            return
+            return    
+        # We fixed the race condition here by adding the following code:
+        # if fast_input_semaphore.aquire():
         self.direction = e.keysym
+        #   fast_input_semaphore.release()
 
     def move(self) -> None:
         """ 
@@ -162,25 +169,23 @@ class Game():
         """
         # Create Variables Needed For Method
         NewSnakeCoordinates = self.calculateNewCoordinates()                                                # New snake coordniates based on movements
-        snakeSize = len(self.snakeCoordinates)                                                              # Lenght of the snake
+        # Check to see if the new coordinates satisfy over condition
+        self.isGameOver(NewSnakeCoordinates)
         preyCoordinates = (gui.canvas.coords(gui.preyIcon)[0] + 5, gui.canvas.coords(gui.preyIcon)[1] + 5)  # Coordinates of the prey
-
         # Check wether the movent will lead to the capture of a prey
         if NewSnakeCoordinates == preyCoordinates:
             self.score += 1                                                                                 # Update the score
+            self.queue.put_nowait({"score": self.score})                                                    # Put task to update score in the queue
             self.snakeCoordinates.append(NewSnakeCoordinates)                                               # Append the new coordinates to the list, instead of the switching process
             self.createNewPrey()                                                                            # Create a new prey
-            self.queue.put_nowait({"score": self.score})                                                    # Put task to update score in the queue
         # If the movement does not lead to the capture of a prey, then simply shift the snake coordinates acordingly
         # Since the body of the snake always follows the head, we simply have to move everything from Tail + 1 to Head - 1
         else:
-            for i in range(snakeSize - 1):                                                                  # We disregard the location of the head which is why there is a -1. The new head of the snake will simply be the calculated coordinates
-                self.snakeCoordinates[i] = (self.snakeCoordinates[i+1])                                     # The tail of the snake is at snakeCoordinates[0] so we go from [0:snakeSize - 1]
-            self.snakeCoordinates[-1] = NewSnakeCoordinates                                                 # If as a result of the movement we do not cature a prey then simply move the head to to calculated coordinates
-        # Check to see if the movement results in the end of the game
-        self.isGameOver(self.snakeCoordinates)
+            self.snakeCoordinates.append(NewSnakeCoordinates)
+            self.snakeCoordinates.remove(self.snakeCoordinates[0])
         # Add the movement task into the queue
         self.queue.put_nowait({"move": self.snakeCoordinates})
+
 
     def calculateNewCoordinates(self) -> tuple:
         """
@@ -193,17 +198,17 @@ class Game():
         """
         lastX, lastY = self.snakeCoordinates[-1]    # Head of the snake
         direction = self.direction                  # Direction the snake is moving
+        newCoordinates = (0,0)    
         # Note that the snake has been defined in intervals of 10, since the gui.Icons have a width of 10, so we keep the same convention in our calculations
-        
         if direction == "Up":                       # If direction is up we add 5 from the previous y-cord of the head of the snake
-          return (lastX, lastY - 10)
+          newCoordinates = (lastX, lastY - 10)
         elif direction == "Down":                   # If direction is down we subtract 5 from the prevous y-cord of the head of the snake
-          return(lastX, lastY + 10)  
+          newCoordinates = (lastX, lastY + 10)  
         elif direction == "Left":                   # If direction is left we subtract 5 from the previous x-cord of the head of the snake
-          return(lastX - 10, lastY)
+          newCoordinates = (lastX - 10, lastY)
         else:                                       # Else if direction is right we add 5 from the previous x-cord of the head of the snake
-          return(lastX + 10, lastY)
-        
+          newCoordinates = (lastX + 10, lastY)
+        return newCoordinates
 
 
     def isGameOver(self, snakeCoordinates) -> None:
@@ -214,17 +219,13 @@ class Game():
             If that is the case, it updates the gameNotOver 
             field and also adds a "game_over" task to the queue. 
         """
-        # Create Variables required for method
-        headX, headY = snakeCoordinates[-1]                                             # The coordinates of the head of the snake
-        snakeBody = len(snakeCoordinates) - 1                                           # Disregard the head of the snake
+        x, y = snakeCoordinates
 
-        if (headX,headY) in snakeCoordinates[0:snakeBody]:                              # If the coordinates of the snake's head are found somewhere else in the snake, then that means we have bit ourselves and the game should be over
-            self.gameNotOver = False                                                    # Update game flag accordingly
-            self.queue.put_nowait({"game_over"})                                        # Put a gameOver task in the queue
-        elif headX < 0 or headY < 0 or headX > WINDOW_WIDTH or headY > WINDOW_HEIGHT:   # The game can also end if the head goes beyond the bounds of the window
-            self.gameNotOver = False                                                    # Update game flag accordingly
-            self.queue.put_nowait({"game_over"})                                        # Put a gameOver task in the queue
-                
+        if (x,y) in self.snakeCoordinates[2:] or (x < 0) or (x > WINDOW_WIDTH) or (y < 0) or (y > WINDOW_HEIGHT):
+          self.gameNotOver = False
+          self.queue.put_nowait({"game_over": True})
+
+
     def createNewPrey(self) -> None:
         """ 
             This methods picks an x and a y randomly as the coordinate 
@@ -243,7 +244,7 @@ class Game():
         while (preyX % 10) != 5:                                            # Since the snake will move in steps of 10 units, and the snake starts in a 5 mod10 square, the coordinates of the snake will always be 5 mod 10 which we also want for our prey
             preyX = random.randint(0+THRESHOLD,WINDOW_WIDTH-THRESHOLD)      # Generate this 5 mod 10 number between the threshold boundary
         while (preyY % 10) != 5:
-            preyY = random.randint(0+THRESHOLD, WINDOW_HEIGHT-THRESHOLD)    # Generate this 4 mod 10 number between the threshold boundary
+            preyY = random.randint(0+THRESHOLD, WINDOW_HEIGHT-THRESHOLD)    # Generate this 5 mod 10 number between the threshold boundary
         
         self.queue.put_nowait({"prey": (preyX - 5, preyY - 5, preyX + 5, preyY + 5)}) # Update queue to create a new prey
 
@@ -265,6 +266,8 @@ if __name__ == "__main__":
     
     QueueHandler(gameQueue, gui)  #instantiate our queue handler    
     
+    fast_input_lock = threading.Lock()
+
     #start a thread with the main loop of the game
     threading.Thread(target = game.superloop, daemon=True).start()
 
